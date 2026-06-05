@@ -26,7 +26,10 @@ def _select_rm_score_fn(data_source):
     if data_source in ['nq', 'triviaqa', 'popqa', 'hotpotqa', '2wikimultihopqa', 'musique', 'bamboogle']:
         return qa_em.compute_score_em
     else:
-        raise NotImplementedError
+        # SAGE synthetic data labels train rows data_source='synthetic' and test
+        # rows with integer search-step buckets (2..7); both carry rule-style
+        # ground_truth and use the same EM-against-gold reward as the QA sets.
+        return qa_em.compute_score_em
 
 
 class RewardManager():
@@ -97,6 +100,7 @@ class RewardManager():
         return reward_tensor
 
 
+import os
 import ray
 import hydra
 
@@ -105,7 +109,13 @@ import hydra
 def main(config):
     if not ray.is_initialized():
         # this is for local ray cluster
-        ray.init(runtime_env={'env_vars': {'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'}})
+        ray_init_kwargs = {'runtime_env': {'env_vars': {'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'}}}
+        # Redirect Ray's temp/spill dir off a full root disk (e.g. to a large data volume) when RAY_TEMP_DIR is set
+        ray_temp_dir = os.environ.get('RAY_TEMP_DIR')
+        if ray_temp_dir:
+            os.makedirs(ray_temp_dir, exist_ok=True)
+            ray_init_kwargs['_temp_dir'] = ray_temp_dir
+        ray.init(**ray_init_kwargs)
 
     ray.get(main_task.remote(config))
 

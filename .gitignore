@@ -120,3 +120,12 @@ tests/e2e/toy_examples/deepspeed/synchronous/output.txt
 log/
 
 **logs
+index_document/
+.claude/
+,
+__pycache__/
+*.pyc
+*.log
+
+# machine-specific secrets/paths
+.env
