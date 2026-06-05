@@ -16,13 +16,17 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 def load_corpus(corpus_path: str):
-    corpus = datasets.load_dataset(
-        'json', 
-        data_files=corpus_path,
-        split="train",
-        num_proc=4
-    )
-    return corpus
+    try:
+        return read_jsonl(corpus_path)
+    except Exception as e:
+        print(f"Failed to load corpus with read_jsonl: {e}. Falling back to datasets.load_dataset()...")
+        corpus = datasets.load_dataset(
+            'json',
+            data_files=corpus_path,
+            split="train",
+            num_proc=4
+        )
+        return corpus
 
 def read_jsonl(file_path):
     data = []
@@ -209,8 +213,14 @@ class DenseRetriever(BaseRetriever):
         super().__init__(config)
         self.index = faiss.read_index(self.index_path)
         if config.faiss_gpu:
-            co = faiss.GpuMultipleClonerOptions()
-            co.useFloat16 = True
+            co = faiss.swigfaiss.GpuMultipleClonerOptions()
+            # useFloat16 MUST stay False on this box: the installed faiss-gpu 1.7.2
+            # has no Hopper (sm_90 / H200) kernel for its fp16 cublas gemm, so fp16
+            # GPU search aborts the process with "cublas failed (13)
+            # CUBLAS_STATUS_EXECUTION_FAILED" on the very first query. fp32 GPU
+            # search works fine. Cost: the index stays float32 on the GPU (~61 GB
+            # instead of ~33 GB) — fits comfortably on a 143 GB H200.
+            co.useFloat16 = False
             co.shard = True
             self.index = faiss.index_cpu_to_all_gpus(self.index, co=co)
 
@@ -367,6 +377,7 @@ if __name__ == "__main__":
     parser.add_argument("--retriever_name", type=str, default="e5", help="Name of the retriever model.")
     parser.add_argument("--retriever_model", type=str, default="intfloat/e5-base-v2", help="Path of the retriever model.")
     parser.add_argument('--faiss_gpu', action='store_true', help='Use GPU for computation')
+    parser.add_argument("--port", type=int, default=8000, help="Port to run the server on")
 
     args = parser.parse_args()
     
@@ -389,4 +400,4 @@ if __name__ == "__main__":
     retriever = get_retriever(config)
     
     # 3) Launch the server. By default, it listens on http://127.0.0.1:8000
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=args.port)

@@ -9,6 +9,7 @@ from verl import DataProto
 from verl.utils.tracking import Tracking
 import shutil
 import requests
+import time
 
 @dataclass
 class GenerationConfig:
@@ -448,14 +449,46 @@ If I want to give the final answer, I should put the answer between <answer> and
         return [self._passages2string(result) for result in results]
 
     def _batch_search(self, queries):
-        
+
         payload = {
             "queries": queries,
             "topk": self.config.topk,
             "return_scores": True
         }
-        
-        return requests.post(self.config.search_url, json=payload).json()
+
+        # Retry to tolerate the retriever still loading its index at startup (so
+        # training can be launched concurrently with the retriever and simply wait
+        # for it here) and to survive transient retriever hiccups instead of
+        # crashing the whole run. Only connection/timeout failures are retried;
+        # an HTTP error from a reachable server still raises so real bugs surface.
+        #   RETRIEVER_WAIT_SECS  - total time to keep retrying before giving up (default 1800s / 30 min)
+        #   RETRIEVER_READ_TIMEOUT - per-request read timeout (default 600s) to catch genuine hangs
+        max_wait = float(os.environ.get("RETRIEVER_WAIT_SECS", "1800"))
+        read_timeout = float(os.environ.get("RETRIEVER_READ_TIMEOUT", "600"))
+        deadline = time.time() + max_wait
+        backoff = 5.0
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                resp = requests.post(
+                    self.config.search_url, json=payload, timeout=(10, read_timeout)
+                )
+                resp.raise_for_status()
+                return resp.json()
+            except (requests.ConnectionError, requests.Timeout) as e:
+                if time.time() >= deadline:
+                    raise RuntimeError(
+                        f"Retriever at {self.config.search_url} unreachable after "
+                        f"{max_wait:.0f}s ({attempt} attempts); last error: {e!r}"
+                    ) from e
+                print(
+                    f"[generation] retriever not ready ({type(e).__name__}, attempt "
+                    f"{attempt}); retrying in {backoff:.0f}s...",
+                    flush=True,
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 60.0)
 
     def _passages2string(self, retrieval_result):
         format_reference = ''
