@@ -22,33 +22,49 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # already hosting the retriever (~33 GB used -> ~110 GB free), so auto-pick never
 # co-locates training onto the retriever's card. An empty H200 reports ~138 GB
 # free, so genuinely-empty cards still clear this floor with ~18 GB to spare.
-export MIN_FREE_MIB=${MIN_FREE_MIB:-120000}
+# Selection ladder: tiers of "count:min_free_mib:gpu_mem_util", tried in order.
+# The first tier that can be satisfied (that many GPUs each with >= min_free_mib
+# free) wins and sets BOTH the GPU set AND vLLM's gpu_memory_utilization — a
+# lower-memory tier pairs with a lower util so the job actually fits on cards with
+# less free memory (vLLM ~= util * 143771 MiB per card; 0.4->~57GB, 0.3->~43GB).
+# Override the ladder with GPU_LADDER, pin the util with GMU, or bypass selection
+# with FORCE_GPUS (then GMU or 0.4 is used). Default prefers 4 GPUs, then drops the
+# per-GPU memory bar, then 2 GPUs. It never selects 1 GPU: a 7.6B actor+critic+vLLM
+# job OOMs on a single H200.
+#   default:  4@120GB(util .4) -> 4@90GB(util .3) -> 2@120GB(.4) -> 2@90GB(.3)
+GPU_LADDER=${GPU_LADDER:-"4:120000:0.4 4:90000:0.3 2:120000:0.4 2:90000:0.3"}
 
 if [ -n "${FORCE_GPUS:-}" ]; then
     export CUDA_VISIBLE_DEVICES=$FORCE_GPUS
     N_GPUS=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | grep -c .)
-    echo "[run.sh] FORCE_GPUS set -> CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES ($N_GPUS GPU(s))"
+    GPU_MEM_UTIL=${GMU:-0.4}
+    echo "[run.sh] FORCE_GPUS set -> CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES ($N_GPUS GPU(s)), gpu_mem_util=$GPU_MEM_UTIL"
 else
-    ELIGIBLE_IDS=()
-    while IFS=',' read -r id free; do
-        id=$(echo "$id" | tr -d ' '); free=$(echo "$free" | tr -d ' ')
-        [ "$free" -ge "$MIN_FREE_MIB" ] && ELIGIBLE_IDS+=("$id")
-    done < <(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits | sort -t',' -k2 -rn)
+    # Snapshot free memory once (id,free MiB), most-free first.
+    GPU_FREE_SORTED=$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits \
+        | tr -d ' ' | sort -t',' -k2 -rn)
 
-    AVAIL=${#ELIGIBLE_IDS[@]}
-    if   [ "$AVAIL" -ge 8 ]; then N_GPUS=8
-    elif [ "$AVAIL" -ge 4 ]; then N_GPUS=4
-    elif [ "$AVAIL" -ge 2 ]; then N_GPUS=2
-    elif [ "$AVAIL" -ge 1 ]; then N_GPUS=1
-    else
-        echo "ERROR: no GPU has >= ${MIN_FREE_MIB} MiB free. Current free memory:" >&2
+    CUDA_VISIBLE_DEVICES=""; N_GPUS=""; GPU_MEM_UTIL=""
+    for tier in $GPU_LADDER; do
+        cnt=${tier%%:*}; minf=$(echo "$tier" | cut -d: -f2); util=${tier##*:}
+        ELIGIBLE=$(echo "$GPU_FREE_SORTED" | awk -F',' -v m="$minf" '$2+0>=m{print $1}')
+        AVAIL=$(printf '%s\n' "$ELIGIBLE" | grep -c .)
+        if [ "$AVAIL" -ge "$cnt" ]; then
+            # Take the `cnt` most-free eligible cards (already desc-sorted), tidy ascending.
+            export CUDA_VISIBLE_DEVICES=$(printf '%s\n' "$ELIGIBLE" | head -n "$cnt" | sort -n | paste -sd, -)
+            N_GPUS=$cnt
+            GPU_MEM_UTIL=${GMU:-$util}
+            export MIN_FREE_MIB=$minf
+            echo "[run.sh] ladder matched tier ${cnt}x>=${minf}MiB -> CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES, gpu_mem_util=$GPU_MEM_UTIL ($AVAIL cards qualified)"
+            break
+        fi
+    done
+
+    if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
+        echo "ERROR: no GPU_LADDER tier satisfiable (ladder: $GPU_LADDER). Current free memory:" >&2
         nvidia-smi --query-gpu=index,memory.free --format=csv,noheader >&2
         exit 1
     fi
-
-    # Take the N most-free GPUs (list is sorted by free mem desc), tidy ascending.
-    export CUDA_VISIBLE_DEVICES=$(printf '%s\n' "${ELIGIBLE_IDS[@]:0:$N_GPUS}" | sort -n | paste -sd, -)
-    echo "[run.sh] auto-selected $N_GPUS/${AVAIL} eligible GPU(s) -> CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 fi
 
 # ---------------------------------------------------------------------------
@@ -139,7 +155,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size=$LOGPROB_MICRO \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=$GPU_MEM_UTIL \
     actor_rollout_ref.ref.log_prob_micro_batch_size=$LOGPROB_MICRO \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     actor_rollout_ref.rollout.n_agent=1 \
