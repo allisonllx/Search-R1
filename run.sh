@@ -115,10 +115,17 @@ export RETRIEVER_HOST=127.0.0.1
 export BASE_MODEL
 export MAX_TURN=8
 export train_file_name=10turn_2to10_steps_second_round_feedback_min_2_steps_20k
-export EXPERIMENT_NAME=${train_file_name}-qwen2.5-7b-it-llm-judge-max-${MAX_TURN}-turn
+# Derive a model tag from BASE_MODEL's dir name so the experiment label always
+# matches the model actually being trained (avoids a hardcoded "7b"/"3b" drifting
+# out of sync and colliding wandb runs / checkpoint dirs across different models).
+MODEL_TAG=$(basename "$BASE_MODEL")
+export EXPERIMENT_NAME=${train_file_name}-${MODEL_TAG}-llm-judge-max-${MAX_TURN}-turn
 export epoch=15
 # set -x
 export VLLM_ATTENTION_BACKEND=XFORMERS # vllm + qwen2-7b with flash_attn has some issues
+# Reduce CUDA fragmentation so vLLM's per-rollout KV-cache re-allocation is less
+# likely to fail when memory is tight (suggested by the OOM error itself).
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # max_prompt_length = (config['training']['max_start_length'] + config['training']['max_response_length'] * (config['training']['max_turns'] - 1) + config['training']['max_obs_length'] * config['training']['max_turns'])
 
@@ -156,6 +163,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.gpu_memory_utilization=$GPU_MEM_UTIL \
+    actor_rollout_ref.rollout.free_cache_engine=False \
     actor_rollout_ref.ref.log_prob_micro_batch_size=$LOGPROB_MICRO \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     actor_rollout_ref.rollout.n_agent=1 \
