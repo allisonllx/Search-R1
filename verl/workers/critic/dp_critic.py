@@ -63,6 +63,18 @@ class DataParallelPPOCritic(BasePPOCritic):
                                                            attention_mask)  # input_ids_rmpad (total_nnz, ...)
                 input_ids_rmpad = input_ids_rmpad.transpose(0, 1)  # (1, total_nnz)
 
+                # Guard: a packed micro-batch with zero real tokens (every row all padding)
+                # makes flash_attn_varlen crash with "batch size must be positive". Return
+                # zeros — these rows are GPU-padding / loss-masked downstream. Mirrors the
+                # guard in dp_actor._forward_micro_batch; log shapes for a diagnosing rerun.
+                if input_ids_rmpad.shape[1] == 0:
+                    print(f"[GUARD] empty packed micro-batch in critic _forward_micro_batch: "
+                          f"input_ids.shape={tuple(input_ids.shape)}, "
+                          f"attn_mask.sum(dim=1)={attention_mask.sum(dim=1).tolist()}, "
+                          f"response_length={response_length}", flush=True)
+                    return torch.zeros(batch, response_length,
+                                       device=input_ids.device, dtype=torch.bfloat16)
+
                 # unpad the position_ids to align the rotary
                 position_ids_rmpad = index_first_axis(rearrange(position_ids.unsqueeze(-1), "b s ... -> (b s) ..."),
                                                       indices).transpose(0, 1)

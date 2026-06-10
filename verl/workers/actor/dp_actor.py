@@ -73,6 +73,20 @@ class DataParallelPPOActor(BasePPOActor):
                                                            attention_mask)  # input_ids_rmpad (total_nnz, ...)
                 input_ids_rmpad = input_ids_rmpad.transpose(0, 1)  # (1, total_nnz)
 
+                # Guard: if a packed micro-batch has zero real tokens (every row is all
+                # padding), flash_attn_varlen crashes with "batch size must be positive".
+                # Return zeros — these rows are GPU-padding / loss-masked downstream, so the
+                # values are discarded anyway. Log the shapes so a self-diagnosing rerun can
+                # confirm the data condition that triggered the original crash.
+                if input_ids_rmpad.shape[1] == 0:
+                    print(f"[GUARD] empty packed micro-batch in actor _forward_micro_batch: "
+                          f"input_ids.shape={tuple(input_ids.shape)}, "
+                          f"attn_mask.sum(dim=1)={attention_mask.sum(dim=1).tolist()}, "
+                          f"response_length={response_length}", flush=True)
+                    zero = torch.zeros(batch_size, response_length,
+                                       device=input_ids.device, dtype=torch.bfloat16)
+                    return zero, zero
+
                 # unpad the position_ids to align the rotary
                 position_ids_rmpad = index_first_axis(rearrange(position_ids.unsqueeze(-1), "b s ... -> (b s) ..."),
                                                       indices).transpose(0, 1)
