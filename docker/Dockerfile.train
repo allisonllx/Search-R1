@@ -1,0 +1,49 @@
+# Search-R1 TRAINING image (verl + vllm + flash-attn).
+# Built FROM a CUDA *devel* base because flash-attn compiles against nvcc.
+# torch is installed from the cu128 wheel index so it brings its matching NVIDIA
+# stack (NCCL 2.27.3 etc.) — this is the set that avoids both the `Replicate`
+# import error and the `undefined symbol: ncclCommResume` NCCL mismatch.
+#
+# Adjust the CUDA tag / arch list if your GPUs are not Hopper (sm_90).
+FROM nvidia/cuda:12.8.1-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1 \
+    # Build flash-attn only for Hopper; trim to your arch(es) to speed the build.
+    TORCH_CUDA_ARCH_LIST="9.0+PTX" \
+    MAX_JOBS=4
+
+# Python 3.9 (matches the validated env) via deadsnakes, plus build tooling.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common ca-certificates curl git build-essential ninja-build \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.9 python3.9-dev python3.9-distutils \
+    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.9 \
+    && ln -sf /usr/bin/python3.9 /usr/local/bin/python \
+    && ln -sf /usr/bin/python3.9 /usr/local/bin/python3 \
+    && python -m pip install --upgrade pip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 1) torch first, from the cu128 index (pulls the matching NCCL / CUDA wheels).
+RUN python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+
+# 2) flash-attn, built against the torch installed above (needs nvcc + --no-build-isolation).
+#    Slow (tens of minutes). Done before the rest so it is cached across code changes.
+RUN python -m pip install flash-attn==2.8.3 --no-build-isolation
+
+# 3) remaining pinned deps. flash-attn==2.8.3 is already satisfied above, so it is skipped.
+COPY requirements.txt ./requirements.txt
+RUN python -m pip install -r requirements.txt
+
+# 4) the verl/Search-R1 package itself (editable). Deps already installed -> --no-deps.
+#    At runtime the host repo is mounted over /app, so this just registers the editable link.
+COPY . /app
+RUN python -m pip install -e . --no-deps
+
+# Default: stay alive so you can launch training on demand:
+#   docker compose exec train bash run.sh
+CMD ["tail", "-f", "/dev/null"]

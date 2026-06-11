@@ -129,3 +129,6 @@ __pycache__/
 
 # machine-specific secrets/paths
 .env
+
+# docker HF cache
+.hf-cache/

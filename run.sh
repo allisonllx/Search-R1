@@ -106,7 +106,9 @@ WAND_PROJECT='Search-R1-synthetic-data'
 
 # Retriever server configuration
 export RETRIEVER_PORT=${RETRIEVER_PORT:-8002}
-export RETRIEVER_HOST=127.0.0.1
+# Default to localhost (bare-metal); docker-compose sets RETRIEVER_HOST to the
+# retriever service name so the training container reaches it over the bridge network.
+export RETRIEVER_HOST=${RETRIEVER_HOST:-127.0.0.1}
 
 # export BASE_MODEL='meta-llama/Llama-3.2-3B'
 # export BASE_MODEL='Qwen/Qwen2.5-3B-Instruct'  # HF download hung at ~64MB/5.75GB; switched to local 7B

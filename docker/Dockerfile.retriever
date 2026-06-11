@@ -1,0 +1,32 @@
+# Search-R1 RETRIEVER image (e5 encoder on GPU + faiss-cpu search).
+# No flash-attn / vllm / verl here, so a CUDA *runtime* base is enough (no nvcc).
+# faiss runs on CPU (faiss-cpu via pip) — stable on H200; the encoder still uses the
+# GPU. nvidia-smi (used by retrieval_launch_smart.sh for GPU selection) is injected
+# by the NVIDIA container runtime at `docker run`, so it need not be in the image.
+FROM nvidia/cuda:12.8.1-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1 \
+    RETRIEVER_BACKEND=faiss_cpu
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip curl ca-certificates \
+    && ln -sf /usr/bin/python3 /usr/local/bin/python \
+    && python -m pip install --upgrade pip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# torch from the cu128 index (encoder runs on GPU); then the retriever pip deps.
+RUN python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+COPY requirements_retriever_pip.txt ./requirements_retriever_pip.txt
+RUN python -m pip install -r requirements_retriever_pip.txt
+
+# Only the code the server needs; data/index/models are host-mounted at runtime.
+COPY . /app
+
+# retrieval_launch_smart.sh reads INDEX_DIR / RETRIEVER_PORT / RETRIEVER_BACKEND from
+# the environment (provided by docker-compose), picks a GPU for the encoder, and serves
+# POST /retrieve on 0.0.0.0:$RETRIEVER_PORT.
+CMD ["bash", "retrieval_launch_smart.sh"]

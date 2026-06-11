@@ -1,0 +1,15 @@
+# Keep the build context small: data, weights, checkpoints and logs are host-mounted
+# at runtime, not baked into the images.
+.git
+.env
+index_document/
+verl_checkpoints/
+**/checkpoints
+wandb/
+outputs/
+data/
+.hf-cache/
+*.log
+**/__pycache__/
+**/*.pyc
+*.egg-info/

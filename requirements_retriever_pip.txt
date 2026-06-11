@@ -10,9 +10,10 @@ transformers==4.56.2
 datasets==3.6.0
 uvicorn==0.37.0
 fastapi==0.135.1
-# pyserini is only needed for the sparse/BM25 retriever; it also pulls in a JVM/Java deps.
-# Left unpinned — drop this line if you only use the dense (e5) retriever.
-pyserini
+# pyserini is only needed for the sparse/BM25 retriever and pulls in a JVM/Java toolchain.
+# Commented out by default (the dense e5 + faiss path does not need it, and the Docker
+# retriever image stays lean). Uncomment + install a JDK if you want BM25.
+# pyserini
 # faiss-cpu fallback for machines where faiss-gpu is unavailable or broken (e.g. H200).
 # Install this INSTEAD of faiss-gpu from requirements_retriever_conda.txt on such boxes.
 faiss-cpu==1.12.0

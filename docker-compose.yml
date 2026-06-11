@@ -1,0 +1,73 @@
+# Search-R1 two-service stack: a retriever server + a training container that calls it.
+#
+#   cp .env.example .env   # fill in BASE_MODEL, INDEX_DIR, RAY_TEMP_DIR, ...
+#   docker compose build
+#   docker compose up -d retriever        # loads the index (can take minutes)
+#   docker compose up -d train            # waits until retriever is healthy
+#   docker compose exec train bash run.sh # launch PPO training
+#
+# Requires the NVIDIA Container Toolkit on the host (so containers can see the GPUs).
+# Paths in the `volumes:` blocks come from .env and are mounted at the SAME path inside
+# the container, so the values already in your .env work unchanged.
+
+services:
+  retriever:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.retriever
+    image: search-r1-retriever
+    environment:
+      RETRIEVER_BACKEND: ${RETRIEVER_BACKEND:-faiss_cpu}
+      RETRIEVER_PORT: ${RETRIEVER_PORT:-8002}
+      INDEX_DIR: ${INDEX_DIR}
+      HF_HOME: /hf-cache
+      # Pin the encoder to a specific physical GPU if you want it off the training cards.
+      FORCE_RETRIEVER_GPUS: ${FORCE_RETRIEVER_GPUS:-}
+    volumes:
+      - ${INDEX_DIR}:${INDEX_DIR}:ro            # FAISS index + wiki corpus (read-only)
+      - ${HF_HOME:-./.hf-cache}:/hf-cache        # cache the e5 model between runs
+    ports:
+      - "${RETRIEVER_PORT:-8002}:${RETRIEVER_PORT:-8002}"  # optional: reach it from the host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      # FastAPI serves /docs once uvicorn is up; index load happens before that.
+      test: ["CMD", "curl", "-f", "http://localhost:${RETRIEVER_PORT:-8002}/docs"]
+      interval: 30s
+      timeout: 5s
+      retries: 30
+      start_period: 900s    # allow several minutes to load the corpus + index
+
+  train:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.train
+    image: search-r1-train
+    depends_on:
+      retriever:
+        condition: service_healthy   # don't come up until the retriever answers
+    environment:
+      BASE_MODEL: ${BASE_MODEL}
+      RAY_TEMP_DIR: ${RAY_TEMP_DIR:-/tmp/ray}
+      RETRIEVER_HOST: retriever        # reach the retriever by its compose service name
+      RETRIEVER_PORT: ${RETRIEVER_PORT:-8002}
+      HF_HOME: /hf-cache
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+    volumes:
+      - .:/app                                   # live code + checkpoints/logs land on host
+      - ${BASE_MODEL}:${BASE_MODEL}:ro           # actor/critic/rollout base model
+      - ${RAY_TEMP_DIR:-/tmp/ray}:${RAY_TEMP_DIR:-/tmp/ray}
+      - ${HF_HOME:-./.hf-cache}:/hf-cache
+    shm_size: "32gb"                              # NCCL / dataloader shared memory
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
