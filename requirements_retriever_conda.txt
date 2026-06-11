@@ -1,0 +1,17 @@
+# Retriever environment — CONDA packages (separate env from training).
+#
+#   conda create -n retriever python=3.10 && conda activate retriever
+#   conda install --file requirements_retriever_conda.txt -c pytorch -c nvidia
+#
+# torch is installed via conda here (not pip) because faiss-gpu is distributed through
+# the conda pytorch/nvidia channels and needs a matching conda torch build.
+#
+# WARNING: faiss-gpu is BROKEN on Hopper / H200 (sm_90) — faiss-gpu 1.7.x/1.8.0 has no
+# working GPU search kernel and aborts ("cublas failed (13)") in BOTH fp16 and fp32.
+# On an H200, SKIP faiss-gpu below and use faiss-cpu from requirements_retriever_pip.txt
+# (the encoder still runs on GPU; only the index search falls back to CPU).
+pytorch==2.4.0
+torchvision==0.19.0
+torchaudio==2.4.0
+pytorch-cuda=12.1
+faiss-gpu=1.8.0

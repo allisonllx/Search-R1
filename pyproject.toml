@@ -28,19 +28,27 @@ authors = [
   { name = "Bytedance - Seed - MLSys", email = "gmsheng@connect.hku.hk" },
 ]
 
-# Dependencies corresponding to install_requires in setup.py
+# Dependencies corresponding to install_requires in setup.py (keep in sync with
+# requirements.txt). Pins reflect a known-good set; transformers<4.48 + new torch
+# crashes with "cannot import name 'Replicate' from torch.distributed.tensor".
 dependencies = [
-    "accelerate",
-    "codetiming",
-    "datasets",
-    "dill",
-    "hydra-core",
-    "numpy",
-    "pybind11",
-    "ray",
-    "tensordict",
-    "transformers<4.48",
-    "vllm<=0.6.3",
+    "accelerate==1.10.1",
+    "codetiming==1.4.0",
+    "datasets==3.6.0",
+    "dill==0.3.8",
+    "flash-attn==2.8.3",
+    "hydra-core==1.3.2",
+    "numpy>=2.0,<3",
+    "pandas==2.3.2",
+    "pybind11==3.0.1",
+    "ray==2.49.2",
+    "tensordict==0.9.1",
+    "tokenizers==0.22.1",
+    "transformers==4.56.2",
+    "vllm==0.10.2",
+    "wandb==0.23.1",
+    "IPython==9.5.0",
+    "matplotlib==3.10.6",
 ]
 
 # Optional dependencies (extras_require in setup.py)

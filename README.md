@@ -65,38 +65,44 @@ Paper: [link1](https://arxiv.org/pdf/2503.09516), [link2](https://arxiv.org/abs/
 ## Installation
 
 ### Search-r1 environment
+This is the **training** environment. Its pip dependencies live in `requirements.txt`
+(pulled in automatically by `pip install -e .`).
 ```bash
 conda create -n searchr1 python=3.9
 conda activate searchr1
-# install torch [or you can skip this step and let vllm to install the correct version for you]
-pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu121
-# install vllm
-pip3 install vllm==0.6.3 # or you can install 0.5.4, 0.4.2 and 0.3.1
+# install torch first from the CUDA wheel index that matches your box
+# (NOT pinned in requirements.txt because the +cuXXX suffix is machine-specific)
+pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 
-# verl
+# verl + all training pip deps (vllm, transformers, ray, flash-attn, ... from requirements.txt)
 pip install -e .
 
-# flash attention 2
-pip3 install flash-attn --no-build-isolation
-pip install wandb
+# flash-attn must be (re)built against the installed torch
+pip3 install flash-attn==2.8.3 --no-build-isolation
 ```
+> The pins in `requirements.txt` reflect a known-good, mutually compatible set. The older
+> loose pins (`transformers<4.48`, `vllm<=0.6.3`) resolved on a fresh clone to
+> transformers 4.47.1, which crashes against newer torch with
+> `ImportError: cannot import name 'Replicate' from 'torch.distributed.tensor'`.
 
 ### Retriever environment (optional)
-If you would like to call a local retriever as the search engine, you can install the environment as follows. (We recommend using a seperate environment.)
+If you would like to call a local retriever as the search engine, install it in a
+**separate** environment. Its dependencies are split by installer:
+`requirements_retriever_conda.txt` (conda) and `requirements_retriever_pip.txt` (pip).
 ```bash
 conda create -n retriever python=3.10
 conda activate retriever
 
-# we recommend installing torch with conda for faiss-gpu
-conda install pytorch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 pytorch-cuda=12.1 -c pytorch -c nvidia
-pip install transformers datasets pyserini
+# conda packages: torch stack + faiss-gpu (faiss-gpu ships via the conda channels)
+conda install --file requirements_retriever_conda.txt -c pytorch -c nvidia
 
-## install the gpu version faiss to guarantee efficient RL rollout
-conda install -c pytorch -c nvidia faiss-gpu=1.8.0
-
-## API function
-pip install uvicorn fastapi
+# pip packages: transformers, datasets, pyserini, uvicorn, fastapi, faiss-cpu fallback
+pip install -r requirements_retriever_pip.txt
 ```
+> **Hopper / H200 note:** faiss-gpu 1.7.x/1.8.0 has no working sm_90 search kernel and
+> aborts on the H200. On such GPUs, skip `faiss-gpu` from the conda file and rely on the
+> `faiss-cpu` entry in `requirements_retriever_pip.txt` (encoder stays on GPU; only the
+> index search runs on CPU).
 
 
 ## Quick start
