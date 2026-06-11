@@ -106,6 +106,35 @@ case "$GPU_SET" in
 esac
 echo "Using port $PORT"
 
+# --- Re-check guard: close the time-of-check/time-of-use race ----------------
+# Selection above sampled free memory once; on a shared box another job can grab a
+# chosen card in the seconds before this server allocates its DB + reserved sim
+# buffer. Re-query the cards we are about to use and abort cleanly if any no longer
+# has enough free, so we fail fast with a clear message instead of OOMing on the
+# first query (HTTP 500 -> training abort). Mirrors run.sh's guard. This runs even
+# when FORCE_RETRIEVER_GPUS is set — pinning to a card that is already full is the
+# exact mistake we want to catch. Set SKIP_GPU_RECHECK=1 to bypass.
+if [ -z "${SKIP_GPU_RECHECK:-}" ]; then
+  NCARDS=$(echo "$GPU_SET" | tr ',' '\n' | grep -c .)
+  if [ "$NCARDS" -gt 1 ]; then
+    # Sharded: each card holds ~INDEX_MIB/N plus per-card overhead.
+    PER_CARD_REQ=$(( INDEX_MIB / NCARDS + ${SHARD_PER_CARD_MIB:-1536} ))
+  else
+    PER_CARD_REQ=$REQUIRED_MIB
+  fi
+  FREE_NOW=$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits | sed 's/ //g')
+  for id in $(echo "$GPU_SET" | tr ',' ' '); do
+    free=$(echo "$FREE_NOW" | awk -F',' -v g="$id" '$1==g{print $2+0}')
+    if [ "${free:-0}" -lt "$PER_CARD_REQ" ]; then
+      echo "ERROR: GPU $id dropped to ${free:-0} MiB free (< ${PER_CARD_REQ} needed) between selection and launch." >&2
+      echo "       Another job likely grabbed it. Free a card or re-run to re-select. Current free memory:" >&2
+      nvidia-smi --query-gpu=index,memory.free --format=csv,noheader >&2
+      exit 1
+    fi
+  done
+  echo "[retriever] re-check OK: GPU(s) [$GPU_SET] still have >= ${PER_CARD_REQ} MiB free each"
+fi
+
 export CUDA_VISIBLE_DEVICES=$GPU_SET
 
 if [ "$RETRIEVER_BACKEND" = "torch_gpu" ]; then

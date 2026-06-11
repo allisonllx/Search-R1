@@ -28,11 +28,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # lower-memory tier pairs with a lower util so the job actually fits on cards with
 # less free memory (vLLM ~= util * 143771 MiB per card; 0.4->~57GB, 0.3->~43GB).
 # Override the ladder with GPU_LADDER, pin the util with GMU, or bypass selection
-# with FORCE_GPUS (then GMU or 0.4 is used). Default prefers 4 GPUs, then drops the
-# per-GPU memory bar, then 2 GPUs. It never selects 1 GPU: a 7.6B actor+critic+vLLM
-# job OOMs on a single H200.
-#   default:  4@120GB(util .4) -> 4@90GB(util .3) -> 2@120GB(.4) -> 2@90GB(.3)
-GPU_LADDER=${GPU_LADDER:-"4:120000:0.4 4:90000:0.3 2:120000:0.4 2:90000:0.3"}
+# with FORCE_GPUS (then GMU or 0.4 is used). Default prefers 8 GPUs, then 4, then 2,
+# dropping the per-GPU memory bar at each count. It never selects 1 GPU: a 7.6B
+# actor+critic+vLLM job OOMs on a single H200.
+#   default:  8@120GB(util .4) -> 8@90GB(.3) -> 4@120GB(.4) -> 4@90GB(.3) -> 2@120GB(.4) -> 2@90GB(.3)
+GPU_LADDER=${GPU_LADDER:-"8:120000:0.4 8:90000:0.3 4:120000:0.4 4:90000:0.3 2:120000:0.4 2:90000:0.3"}
 
 if [ -n "${FORCE_GPUS:-}" ]; then
     export CUDA_VISIBLE_DEVICES=$FORCE_GPUS

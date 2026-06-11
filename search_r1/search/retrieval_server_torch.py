@@ -25,10 +25,15 @@ the trainer's `retriever.url` works unchanged — only the launch command differ
 Memory (single H200, ~143 GB)
 -----------------------------
   DB tensor   : 21M * 768 * 2 B (fp16) = ~32 GB   (fp32 = ~64 GB)
-  sim buffer  : gpu_query_batch * 21M * 2 B       (256 -> ~10 GB transient)
+  sim buffer  : gpu_query_batch * 21M * 2 B       (256 -> ~10 GB, reserved up front)
   e5 encoder  : ~1 GB
 Fits comfortably on one dedicated card. The DB is built in chunks so host RAM
 peaks at ~(faiss index 64 GB + one small chunk), not 128 GB.
+
+The similarity buffer is allocated ONCE at startup and held for the server's
+lifetime (not allocated/freed per request). On a shared box this matters: it makes
+the retriever claim its full ~46 GB footprint immediately — like vLLM/FSDP do — so a
+co-located job can never grab the per-query scratch between requests and OOM us.
 """
 
 import os
@@ -93,6 +98,18 @@ class TorchFlatIPRetriever:
         print(f"[torch-retriever] DB on GPU: "
               f"{self.db.element_size() * self.db.nelement() / 1e9:.1f} GB", flush=True)
 
+        # 1b) Reserve the peak (gpu_query_batch x ntotal) similarity buffer ONCE and
+        #     hold it for the server's lifetime. Every request writes into this buffer
+        #     (torch.matmul(..., out=self.sim_buf[:n])) instead of allocating a fresh
+        #     ~10 GB block and freeing it. Pre-claiming it here means the retriever's
+        #     full ~46 GB footprint is taken at startup — so a co-located job can't
+        #     steal the scratch between requests and OOM the next matmul (the failure
+        #     that returned HTTP 500 and aborted training).
+        self.sim_buf = torch.empty((gpu_query_batch, ntotal), dtype=self.db_dtype, device=device)
+        print(f"[torch-retriever] reserved sim buffer: "
+              f"{self.sim_buf.element_size() * self.sim_buf.nelement() / 1e9:.1f} GB "
+              f"(gpu_query_batch={gpu_query_batch})", flush=True)
+
         # 2) Corpus (for turning doc ids into text) and the e5 query encoder (on GPU).
         self.corpus = load_corpus(corpus_path)
         self.encoder = Encoder(
@@ -118,7 +135,12 @@ class TorchFlatIPRetriever:
             emb = self.encoder.encode(qb)  # (n, dim) fp32 numpy, already normalized
             q = torch.from_numpy(emb).to(device=self.device, dtype=self.db_dtype)
 
-            sim = q @ self.db.T                       # (n, ntotal)
+            # Write similarities into the buffer reserved at startup instead of
+            # allocating a fresh ~10 GB block here. self.sim_buf[:n] is a contiguous
+            # view, so no new large allocation happens per request — which is what
+            # stops a co-located job from stealing the scratch and OOMing us.
+            sim = self.sim_buf[:q.shape[0]]
+            torch.matmul(q, self.db.T, out=sim)       # (n, ntotal)
             topk_scores, topk_idx = torch.topk(sim, k=num, dim=1)  # (n, num)
 
             idxs = topk_idx.cpu().tolist()
@@ -130,8 +152,10 @@ class TorchFlatIPRetriever:
             results.extend(chunked)
             scores.extend(scs)
 
-            del emb, q, sim, topk_scores, topk_idx
-            torch.cuda.empty_cache()
+            # NB: do NOT free self.sim_buf or call torch.cuda.empty_cache() here —
+            # holding the reserved buffer for the server's lifetime is the whole point.
+            # Only drop the small per-request temporaries.
+            del emb, q, topk_scores, topk_idx
 
         if return_score:
             return results, scores
