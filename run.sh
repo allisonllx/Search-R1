@@ -199,6 +199,12 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     trainer.default_local_dir=verl_checkpoints/$EXPERIMENT_NAME \
     max_turns=$MAX_TURN \
     +reward_model.reward_manager=llm_judge \
+    +reward_model.judge_model="${VLLM_JUDGE_MODEL:-qwen-judge}" \
+    +reward_model.judge_base_url="${VLLM_JUDGE_BASE_URL:-http://127.0.0.1:8001/v1}" \
+    +reward_model.judge_temperature=0 \
+    +reward_model.judge_timeout="${VLLM_JUDGE_TIMEOUT:-60}" \
+    +reward_model.judge_max_retries="${VLLM_JUDGE_MAX_RETRIES:-3}" \
+    +reward_model.judge_cache_dir="${VLLM_JUDGE_CACHE_DIR:-outputs/llm_judge_cache}" \
     retriever.url="http://${RETRIEVER_HOST}:${RETRIEVER_PORT}/retrieve" \
     retriever.topk=3 \
     2>&1 | tee $EXPERIMENT_NAME.log

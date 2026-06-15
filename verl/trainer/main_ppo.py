@@ -17,7 +17,7 @@ Note that we don't combine the main with ray_trainer as ray_trainer is used by o
 
 from verl import DataProto
 import torch
-from verl.utils.reward_score import qa_em
+from verl.utils.reward_score import llm_judge, qa_em
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 import re
 import numpy as np
@@ -36,10 +36,12 @@ class RewardManager():
     """The reward manager.
     """
 
-    def __init__(self, tokenizer, num_examine, format_score=0.) -> None:
+    def __init__(self, tokenizer, num_examine, format_score=0., reward_manager='em', judge_config=None) -> None:
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.format_score = format_score
+        self.reward_manager = reward_manager
+        self.judge_config = judge_config or {}
 
     def __call__(self, data: DataProto):
         """We will expand this function gradually based on the available datasets"""
@@ -74,20 +76,27 @@ class RewardManager():
 
             ground_truth = data_item.non_tensor_batch['reward_model']['ground_truth']
 
-            # select rm_score
-            data_source = data_item.non_tensor_batch['data_source']
-            compute_score_fn = _select_rm_score_fn(data_source)
-
-            score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth, format_score=self.format_score)
+            if self.reward_manager == 'llm_judge':
+                score = llm_judge.compute_score_llm_judge(
+                    solution_str=sequences_str,
+                    ground_truth=ground_truth,
+                    **self.judge_config,
+                )
+            else:
+                # select rm_score
+                data_source = data_item.non_tensor_batch['data_source']
+                compute_score_fn = _select_rm_score_fn(data_source)
+                score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth, format_score=self.format_score)
 
             reward_tensor[i, valid_response_length - 1] = score
             # all_scores.append(score)
 
-            if data_source not in already_print_data_sources:
-                already_print_data_sources[data_source] = 0
+            print_key = data_item.non_tensor_batch['data_source']
+            if print_key not in already_print_data_sources:
+                already_print_data_sources[print_key] = 0
 
-            if already_print_data_sources[data_source] < self.num_examine:
-                already_print_data_sources[data_source] += 1
+            if already_print_data_sources[print_key] < self.num_examine:
+                already_print_data_sources[print_key] += 1
                 print(sequences_str)
         
         # print(f"[DEBUG] all_scores: {all_scores}")
@@ -190,10 +199,33 @@ def main_task(config):
         role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
         mapping[Role.RewardModel] = global_pool_id
 
-    reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0)
+    reward_manager = config.reward_model.get('reward_manager', 'em')
+    judge_config = {
+        'model': config.reward_model.get('judge_model', 'qwen-judge'),
+        'base_url': config.reward_model.get(
+            'judge_base_url',
+            'http://127.0.0.1:8001/v1',
+        ),
+        'temperature': config.reward_model.get('judge_temperature', 0.0),
+        'timeout': config.reward_model.get('judge_timeout', 60.0),
+        'max_retries': config.reward_model.get('judge_max_retries', 3),
+        'cache_dir': config.reward_model.get('judge_cache_dir', None),
+    }
+
+    reward_fn = RewardManager(
+        tokenizer=tokenizer,
+        num_examine=0,
+        reward_manager=reward_manager,
+        judge_config=judge_config,
+    )
 
     # Note that we always use function-based RM for validation
-    val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1)
+    val_reward_fn = RewardManager(
+        tokenizer=tokenizer,
+        num_examine=1,
+        reward_manager=reward_manager,
+        judge_config=judge_config,
+    )
 
     resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
     trainer = RayPPOTrainer(config=config,
