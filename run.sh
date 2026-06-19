@@ -16,8 +16,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Override the auto-pick by exporting FORCE_GPUS, e.g.  FORCE_GPUS=4,7 ./run.sh
 # ---------------------------------------------------------------------------
 
-# Per rank this job needs: vLLM ~= gpu_memory_utilization(0.4) * 143771 ~= 57 GB,
-# plus FSDP training (~25-30 GB with offload + grad checkpointing) ~= 95-110 GB.
+# Per rank this job needs: vLLM ~= gpu_memory_utilization(0.6) * 143771 ~= 86 GB,
+# plus FSDP training (~25-30 GB with offload + grad checkpointing) ~= 111-116 GB.
 # Floor is 120 GB: comfortably above a rank's real need AND above a GPU that is
 # already hosting the retriever (~33 GB used -> ~110 GB free), so auto-pick never
 # co-locates training onto the retriever's card. An empty H200 reports ~138 GB
@@ -26,18 +26,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The first tier that can be satisfied (that many GPUs each with >= min_free_mib
 # free) wins and sets BOTH the GPU set AND vLLM's gpu_memory_utilization — a
 # lower-memory tier pairs with a lower util so the job actually fits on cards with
-# less free memory (vLLM ~= util * 143771 MiB per card; 0.4->~57GB, 0.3->~43GB).
+# less free memory (vLLM ~= util * 143771 MiB per card; 0.6->~86GB, 0.5->~72GB, 0.4->~57GB, 0.3->~43GB).
 # Override the ladder with GPU_LADDER, pin the util with GMU, or bypass selection
-# with FORCE_GPUS (then GMU or 0.4 is used). Default prefers 8 GPUs, then 4, then 2,
-# dropping the per-GPU memory bar at each count. It never selects 1 GPU: a 7.6B
+# with FORCE_GPUS (then GMU or 0.6 is used). Default prefers 8 GPUs with 0.6, then 8 with 0.5, then 8 with 0.4,
+# then 4, then 2, dropping the per-GPU memory bar at each count. It never selects 1 GPU: a 7.6B
 # actor+critic+vLLM job OOMs on a single H200.
-#   default:  8@120GB(util .4) -> 8@90GB(.3) -> 4@120GB(.4) -> 4@90GB(.3) -> 2@120GB(.4) -> 2@90GB(.3)
-GPU_LADDER=${GPU_LADDER:-"8:120000:0.4 8:90000:0.3 4:120000:0.4 4:90000:0.3 2:120000:0.4 2:90000:0.3"}
+#   default:  8@120GB(util .6) -> 8@120GB(util .5) -> 8@120GB(util .4) -> 8@90GB(.3) -> 4@120GB(.5) -> 4@120GB(.4) -> 4@90GB(.3) -> 2@120GB(.5) -> 2@120GB(.4) -> 2@90GB(.3)
+GPU_LADDER=${GPU_LADDER:-"8:120000:0.6 8:120000:0.5 8:120000:0.4 8:90000:0.3 4:120000:0.5 4:120000:0.4 4:90000:0.3 2:120000:0.5 2:120000:0.4 2:90000:0.3"}
 
 if [ -n "${FORCE_GPUS:-}" ]; then
     export CUDA_VISIBLE_DEVICES=$FORCE_GPUS
     N_GPUS=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | grep -c .)
-    GPU_MEM_UTIL=${GMU:-0.4}
+    GPU_MEM_UTIL=${GMU:-0.6}
     echo "[run.sh] FORCE_GPUS set -> CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES ($N_GPUS GPU(s)), gpu_mem_util=$GPU_MEM_UTIL"
 else
     # Snapshot free memory once (id,free MiB), most-free first.
@@ -148,7 +148,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     data.max_prompt_length=8192 \
     data.max_response_length=1024 \
     data.max_start_length=2048 \
-    data.max_obs_length=1000 \
+    data.max_obs_length=2048 \
     data.shuffle_train_dataloader=True \
     algorithm.adv_estimator=gae \
     actor_rollout_ref.model.path=$BASE_MODEL \

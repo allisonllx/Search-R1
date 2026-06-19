@@ -90,6 +90,9 @@ class DataParallelPPOActor(BasePPOActor):
                 # unpad the position_ids to align the rotary
                 position_ids_rmpad = index_first_axis(rearrange(position_ids.unsqueeze(-1), "b s ... -> (b s) ..."),
                                                       indices).transpose(0, 1)
+                
+                # Normalize position_ids to start from 0 (fixes Flash Attention when sequences are sliced)
+                position_ids_rmpad = position_ids_rmpad - position_ids_rmpad.min()
 
                 # for compute the log_prob
                 input_ids_rmpad_rolled = torch.roll(input_ids_rmpad, shifts=-1, dims=1)  # (1, total_nnz)

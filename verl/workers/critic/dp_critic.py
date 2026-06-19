@@ -78,6 +78,9 @@ class DataParallelPPOCritic(BasePPOCritic):
                 # unpad the position_ids to align the rotary
                 position_ids_rmpad = index_first_axis(rearrange(position_ids.unsqueeze(-1), "b s ... -> (b s) ..."),
                                                       indices).transpose(0, 1)
+                
+                # Normalize position_ids to start from 0 (fixes Flash Attention when sequences are sliced)
+                position_ids_rmpad = position_ids_rmpad - position_ids_rmpad.min()
 
                 # pad and slice the inputs if sp > 1
                 if self.ulysses_sequence_parallel_size > 1:
